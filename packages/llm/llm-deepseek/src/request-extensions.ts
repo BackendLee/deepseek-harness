@@ -4,6 +4,23 @@ import { errorChain, LlmError } from '@deepseek-ai/dsh-llm'
 import type { DeepSeekLlmApiExtensionRequest, PreparedDeepSeekLlmApiExtensions } from '@deepseek-ai/dsh-deepseek-llm-api-extensions'
 import type { DeepSeekAdapterOptions } from './types.ts'
 
+/** An unpaired UTF-16 surrogate half: a high half with no low half after it, or a low half with none before. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
+ * Replace unpaired surrogate halves with U+FFFD while serializing.
+ * Text reaching a request can carry a lone surrogate — a UTF-16 slice that cut an
+ * astral character in half, for example. `JSON.stringify` emits it as a bare
+ * `\uD8xx` escape, which strict parsers (Rust/serde_json behind the gateway)
+ * reject as an unexpected end of hex escape, failing the whole request with 400.
+ * @param _key - replacer key, unused.
+ * @param value - the value `JSON.stringify` is about to encode.
+ * @returns the value with any unpaired surrogate half replaced.
+ */
+function replaceLoneSurrogates(_key: string, value: unknown): unknown {
+  return typeof value === 'string' ? value.replace(LONE_SURROGATE, '\uFFFD') : value
+}
+
 /**
  * Merge contributions without replacing Messages fields. A rejected preparation or
  * a base-field collision reports REQUEST_EXTENSION with the cause chain appended to
@@ -39,10 +56,10 @@ export async function prepareRequestExtensions(
   }
   let payload: string
   try {
-    payload = JSON.stringify({ ...body, ...extensions.fields })
+    payload = JSON.stringify({ ...body, ...extensions.fields }, replaceLoneSurrogates)
   } catch (error) {
     // A base request that cannot serialize throws here, before any field is reported as omitted.
-    const base = JSON.stringify(body)
+    const base = JSON.stringify(body, replaceLoneSurrogates)
     onOmitted(fields, error)
     return { payload: base, accept: () => Promise.resolve() }
   }
